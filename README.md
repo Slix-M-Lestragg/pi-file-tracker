@@ -1,4 +1,4 @@
-# pi-file-tracker
+# @slix/pi-file-tracker
 
 A persistent widget for the [pi coding agent](https://pi.dev) that sits above the text input and lists every file the agent has edited during the session, updated in real time after each change.
 
@@ -7,7 +7,7 @@ A persistent widget for the [pi coding agent](https://pi.dev) that sits above th
 ## Install
 
 ```
-pi install npm:pi-file-tracker
+pi install npm:@slix/pi-file-tracker
 ```
 
 Activates automatically — no configuration needed. Run `/reload` if pi is already open.
