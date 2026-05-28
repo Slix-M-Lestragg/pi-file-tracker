@@ -24,7 +24,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { isEditToolResult, isToolCallEventType, isWriteToolResult } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
 // ─── Data model ─────────────────────────────────────────────────────────────
@@ -134,6 +134,50 @@ function diffLines(
 	return { linesAdded, linesRemoved, charsAdded, charsRemoved };
 }
 
+// ─── Filesystem snapshot helpers ───────────────────────────────────────────
+
+/** path → { mtime, size } for every non-ignored file under a directory */
+type FsSnapshot = Map<string, { mtime: number; size: number }>;
+
+const SNAPSHOT_SKIP = new Set([".git", "node_modules", ".next", "dist", "build", ".cache", "__pycache__"]);
+
+async function takeSnapshot(dir: string): Promise<FsSnapshot> {
+	const snap: FsSnapshot = new Map();
+	let total = 0;
+	async function walk(d: string): Promise<void> {
+		if (total > 20_000) return;
+		let entries;
+		try { entries = await readdir(d, { withFileTypes: true }); } catch { return; }
+		for (const e of entries) {
+			if (SNAPSHOT_SKIP.has(e.name)) continue;
+			const full = `${d}/${e.name}`;
+			if (e.isDirectory()) { await walk(full); }
+			else if (e.isFile()) {
+				try { const s = await stat(full); snap.set(full, { mtime: s.mtimeMs, size: s.size }); total++; }
+				catch { /* ignore permission errors */ }
+			}
+		}
+	}
+	await walk(dir);
+	return snap;
+}
+
+function diffSnapshots(
+	before: FsSnapshot,
+	after: FsSnapshot,
+): { created: string[]; modified: string[]; deleted: string[] } {
+	const created: string[] = [];
+	const modified: string[] = [];
+	const deleted: string[] = [];
+	for (const [p, a] of after) {
+		const b = before.get(p);
+		if (!b) created.push(p);
+		else if (a.mtime !== b.mtime || a.size !== b.size) modified.push(p);
+	}
+	for (const p of before.keys()) if (!after.has(p)) deleted.push(p);
+	return { created, modified, deleted };
+}
+
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
 function toRelativePath(absPath: string, cwd: string): string {
@@ -156,6 +200,13 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 	let showChars = false;
 	/** CWD for the current session */
 	let cwd = process.cwd();
+
+	/**
+	 * Stores pre-bash filesystem snapshots + old content of already-tracked files.
+	 * Key: toolCallId
+	 */
+	interface BashPre { snap: FsSnapshot; tracked: Map<string, string> }
+	const pendingBashPre = new Map<string, BashPre>();
 
 	/**
 	 * Stores old file content before a `write` executes.
@@ -332,8 +383,19 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 		updateWidget(ctx);
 	});
 
-	/** Intercept write tool calls to capture the existing file content */
+	/** Snapshot the filesystem before bash; capture current content of tracked files for accurate diffs */
 	pi.on("tool_call", async (event, _ctx) => {
+		if (event.toolName === "bash") {
+			const snap = await takeSnapshot(cwd);
+			const tracked = new Map<string, string>();
+			for (const absPath of fileMap.keys()) {
+				try { tracked.set(absPath, await readFile(absPath, "utf-8")); } catch { /* already gone */ }
+			}
+			pendingBashPre.set(event.toolCallId, { snap, tracked });
+			return;
+		}
+
+		/** Capture existing write-target content for diff */
 		if (!isToolCallEventType("write", event)) return;
 		const absPath = toAbsPath((event as WriteToolCallEvent).input.path, cwd);
 		try {
@@ -384,18 +446,33 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 			updateWidget(ctx);
 		}
 
-		// ── bash: detect rm deletions ──────────────────────────────────────
-		if (event.toolName === "bash" && !event.isError) {
-			const command = (event.input as { command: string }).command;
-			for (const segment of command.split(/[|&;\n]/)) {
-				const m = segment.match(/\brm\s+(?:-[a-zA-Z]+\s+)*(.+)/);
-				if (!m) continue;
-				for (const token of m[1].trim().split(/\s+/)) {
-					if (!token || token.startsWith("-") || token.includes("*") || token.includes("?")) continue;
-					const absPath = toAbsPath(token, cwd);
-					if (fileMap.has(absPath)) markDeleted(absPath, ctx);
+		// ── bash: filesystem snapshot diff ─────────────────────────────────────
+		if (event.toolName === "bash") {
+			const pre = pendingBashPre.get(event.toolCallId);
+			pendingBashPre.delete(event.toolCallId);
+			if (pre) {
+				const after = await takeSnapshot(cwd);
+				const { created, modified, deleted } = diffSnapshots(pre.snap, after);
+				let dirty = false;
+				for (const p of created) {
+					try {
+						const content = await readFile(p, "utf-8");
+						accumulateStats(p, { linesAdded: content.split("\n").length, linesRemoved: 0, charsAdded: content.length, charsRemoved: 0 }, "created");
+						dirty = true;
+					} catch { /* binary or unreadable — skip */ }
 				}
+				for (const p of modified) {
+					try {
+						const newContent = await readFile(p, "utf-8");
+						const oldContent = pre.tracked.get(p) ?? "";
+						accumulateStats(p, diffLines(oldContent, newContent), "edited");
+						dirty = true;
+					} catch { /* binary — skip */ }
+				}
+				for (const p of deleted) { markDeleted(p, ctx); dirty = true; }
+				if (dirty) { persistState(); updateWidget(ctx); }
 			}
+			return;
 		}
 	});
 
