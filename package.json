@@ -1,6 +1,6 @@
 {
   "name": "@slix/pi-file-tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Widget that tracks files edited by the agent and shows per-file diff stats above the input",
   "type": "module",
   "license": "MIT",
