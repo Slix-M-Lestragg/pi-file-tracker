@@ -1,0 +1,25 @@
+{
+  "name": "pi-file-tracker",
+  "version": "0.1.0",
+  "description": "Widget that tracks files edited by the agent and shows per-file diff stats above the input",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "extension", "diff", "tracker", "widget"],
+  "author": "Slix-M-Lestragg",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Slix-M-Lestragg/pi-file-tracker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Slix-M-Lestragg/pi-file-tracker/issues"
+  },
+  "homepage": "https://github.com/Slix-M-Lestragg/pi-file-tracker#readme",
+  "pi": {
+    "extensions": ["./index.ts"],
+    "image": "https://raw.githubusercontent.com/Slix-M-Lestragg/pi-file-tracker/main/screenshot.png"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
