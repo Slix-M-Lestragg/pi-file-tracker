@@ -25,7 +25,7 @@ import type {
 import { isEditToolResult, isToolCallEventType, isWriteToolResult } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 // ─── Data model ─────────────────────────────────────────────────────────────
 
@@ -285,31 +285,40 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 					// ── File rows ──────────────────────────────────────────
 					for (const f of snapshot) {
 						const relPath = toRelativePath(f.path, cwdSnap);
+						const filename = basename(relPath);
+						const parent = dirname(relPath);
+						const dimSep = theme.fg("dim", " | ");
 
 						if (f.status === "deleted") {
 							const icon = theme.fg("error", " ✖ ");
-							lines.push(truncateToWidth(`${icon}${theme.fg("error", relPath)}`, width));
+							const fileStr = theme.fg("error", theme.bold(filename));
+							const parentStr = theme.fg("error", parent);
+							const row = parent === "."
+								? `${icon}${dimSep}${fileStr}`
+								: `${icon}${dimSep}${fileStr}${dimSep}${parentStr}`;
+							lines.push(truncateToWidth(row, width));
 							continue;
 						}
 
 						const icon = f.status === "created" ? theme.fg("success", " ✚ ") : "   ";
-						const pathPart = f.status === "created"
-							? theme.fg("success", relPath)
-							: theme.fg("accent", relPath);
+						const fileColor = f.status === "created" ? "success" : "accent";
+						const fileStr = theme.fg(fileColor, theme.bold(filename));
+						const parentStr = theme.fg("dim", parent);
+						const editBadge = theme.fg("warning", ` ✎${f.editCount}`);
 
-						// Stat display (lines or chars)
+						const leftPart = parent === "."
+							? `${icon}${dimSep}${fileStr}${editBadge}`
+							: `${icon}${dimSep}${fileStr}${dimSep}${parentStr}${editBadge}`;
+
+						// Stats — always show both counters, even if zero
 						const added = useChars ? f.charsAdded : f.linesAdded;
 						const removed = useChars ? f.charsRemoved : f.linesRemoved;
 						const unit = useChars ? "c" : "";
+						const statsStr = `${theme.fg("success", `+${added}${unit}`)} ${theme.fg("error", `-${removed}${unit}`)}`;
 
-						const statParts: string[] = [];
-						if (added > 0) statParts.push(theme.fg("success", `+${added}${unit}`));
-						if (removed > 0) statParts.push(theme.fg("error", `-${removed}${unit}`));
-						const statsStr = statParts.length > 0 ? statParts.join(theme.fg("dim", " ")) : theme.fg("dim", "~");
-
-						const editBadge = theme.fg("warning", `✎${f.editCount}`);
-
-						lines.push(truncateToWidth(`${icon}${pathPart}  ${statsStr}  ${editBadge}`, width));
+						// Right-align the stats
+						const gap = Math.max(1, width - visibleWidth(leftPart) - visibleWidth(statsStr));
+						lines.push(truncateToWidth(`${leftPart}${" ".repeat(gap)}${statsStr}`, width));
 					}
 
 					cachedLines = lines;
