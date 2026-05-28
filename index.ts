@@ -287,12 +287,12 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 						const relPath = toRelativePath(f.path, cwdSnap);
 
 						if (f.status === "deleted") {
-							const icon = theme.fg("error", "⨵ ");
+							const icon = theme.fg("error", " ✖ ");
 							lines.push(truncateToWidth(`${icon}${theme.fg("error", relPath)}`, width));
 							continue;
 						}
 
-						const icon = f.status === "created" ? theme.fg("success", "⨮ ") : "  ";
+						const icon = f.status === "created" ? theme.fg("success", " ✚ ") : "   ";
 						const pathPart = f.status === "created"
 							? theme.fg("success", relPath)
 							: theme.fg("accent", relPath);
