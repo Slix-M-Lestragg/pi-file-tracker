@@ -42,8 +42,8 @@ interface FileStats {
 	charsRemoved: number;
 	/** How many times this file has been edited/written */
 	editCount: number;
-	/** True when the file was created (write to a non-existent path) */
-	isNew: boolean;
+	/** Lifecycle status of the file */
+	status: "edited" | "created" | "deleted";
 }
 
 interface PersistedState {
@@ -187,6 +187,10 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 			widgetEnabled = lastState.enabled ?? true;
 			showChars = lastState.showChars ?? false;
 			for (const f of lastState.files ?? []) {
+				// Migrate old sessions that stored isNew:boolean instead of status
+				if (!("status" in f)) {
+					(f as FileStats).status = (f as unknown as { isNew: boolean }).isNew ? "created" : "edited";
+				}
 				fileMap.set(f.path, f);
 			}
 		}
@@ -230,8 +234,17 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 					// ── File rows ──────────────────────────────────────────
 					for (const f of snapshot) {
 						const relPath = toRelativePath(f.path, cwdSnap);
-						const newBadge = f.isNew ? theme.fg("success", " ✦") : "";
-						const pathPart = theme.fg("accent", relPath) + newBadge;
+
+						if (f.status === "deleted") {
+							const icon = theme.fg("error", "⨵ ");
+							lines.push(truncateToWidth(`${icon}${theme.fg("error", relPath)}`, width));
+							continue;
+						}
+
+						const icon = f.status === "created" ? theme.fg("success", "⨮ ") : "  ";
+						const pathPart = f.status === "created"
+							? theme.fg("success", relPath)
+							: theme.fg("accent", relPath);
 
 						// Stat display (lines or chars)
 						const added = useChars ? f.charsAdded : f.linesAdded;
@@ -243,11 +256,9 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 						if (removed > 0) statParts.push(theme.fg("error", `-${removed}${unit}`));
 						const statsStr = statParts.length > 0 ? statParts.join(theme.fg("dim", " ")) : theme.fg("dim", "~");
 
-						// Edit count badge
 						const editBadge = theme.fg("warning", `✎${f.editCount}`);
 
-						const row = `  ${pathPart}  ${statsStr}  ${editBadge}`;
-						lines.push(truncateToWidth(row, width));
+						lines.push(truncateToWidth(`${icon}${pathPart}  ${statsStr}  ${editBadge}`, width));
 					}
 
 					cachedLines = lines;
@@ -268,7 +279,7 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 	function accumulateStats(
 		absPath: string,
 		delta: Pick<FileStats, "linesAdded" | "linesRemoved" | "charsAdded" | "charsRemoved">,
-		isNew: boolean,
+		status: "edited" | "created",
 	): void {
 		const existing = fileMap.get(absPath);
 		if (existing) {
@@ -277,8 +288,8 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 			existing.charsAdded += delta.charsAdded;
 			existing.charsRemoved += delta.charsRemoved;
 			existing.editCount++;
-			// Once a file exists it should remain "new" only if it was always new
-			// (keep the original flag)
+			// If a deleted file is re-created, update its status
+			if (existing.status === "deleted") existing.status = status;
 		} else {
 			fileMap.set(absPath, {
 				path: absPath,
@@ -287,9 +298,23 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 				charsAdded: delta.charsAdded,
 				charsRemoved: delta.charsRemoved,
 				editCount: 1,
-				isNew,
+				status,
 			});
 		}
+	}
+
+	function markDeleted(absPath: string, ctx: ExtensionContext): void {
+		const existing = fileMap.get(absPath);
+		if (existing) {
+			existing.status = "deleted";
+		} else {
+			fileMap.set(absPath, {
+				path: absPath, linesAdded: 0, linesRemoved: 0,
+				charsAdded: 0, charsRemoved: 0, editCount: 0, status: "deleted",
+			});
+		}
+		persistState();
+		updateWidget(ctx);
 	}
 
 	// ── Events ───────────────────────────────────────────────────────────────
@@ -330,7 +355,7 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 			if (!details?.diff) return;
 
 			const absPath = toAbsPath(event.input.path as string, cwd);
-			accumulateStats(absPath, parseDiffStats(details.diff), false);
+			accumulateStats(absPath, parseDiffStats(details.diff), "edited");
 			persistState();
 			updateWidget(ctx);
 			return;
@@ -354,9 +379,23 @@ export default function fileTrackerExtension(pi: ExtensionAPI): void {
 					}
 				: diffLines(oldContent as string, newContent);
 
-			accumulateStats(absPath, delta, isNew);
+			accumulateStats(absPath, delta, isNew ? "created" : "edited");
 			persistState();
 			updateWidget(ctx);
+		}
+
+		// ── bash: detect rm deletions ──────────────────────────────────────
+		if (event.toolName === "bash" && !event.isError) {
+			const command = (event.input as { command: string }).command;
+			for (const segment of command.split(/[|&;\n]/)) {
+				const m = segment.match(/\brm\s+(?:-[a-zA-Z]+\s+)*(.+)/);
+				if (!m) continue;
+				for (const token of m[1].trim().split(/\s+/)) {
+					if (!token || token.startsWith("-") || token.includes("*") || token.includes("?")) continue;
+					const absPath = toAbsPath(token, cwd);
+					if (fileMap.has(absPath)) markDeleted(absPath, ctx);
+				}
+			}
 		}
 	});
 
